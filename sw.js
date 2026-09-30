@@ -6,16 +6,16 @@
  * - 학생 기록(localStorage)은 건드리지 않음.
  * 이 파일은 빌드할 때마다 새 버전 번호가 들어가서, 올리면 자동으로 새 버전으로 바뀝니다.
  */
-const VERSION = '202609300830';
+const VERSION = '202609300919';
 const SITE_CACHE = `yireh-hw-site-${VERSION}`;
 const CDN_CACHE = 'yireh-cdn-v1';
 const PRECACHE = [
   "./",
   "index.html",
   "manifest.webmanifest",
-  "assets/quiz.css?v=202609300830",
-  "assets/quiz.js?v=202609300830",
-  "assets/yireh-math.svg",
+  "assets/quiz.css?v=202609300919",
+  "assets/quiz.js?v=202609300919",
+  "assets/yireh-math-wide.svg",
   "icons/app-192.png",
   "icons/app-512.png",
   "icons/app-maskable-512.png",
