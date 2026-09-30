@@ -19,7 +19,7 @@
   const HW_SETS = HW ? ((window.HOMEWORK && window.HOMEWORK.sets) || []).filter(s => s && s.id && Array.isArray(s.questions) && s.questions.length) : [];
   const DATA = window.QUIZ_DATA || { general: [], bible: [] };
   const GRADE_LABEL = { e1:'초1', e2:'초2', e3:'초3', e4:'초4', e5:'초5', e6:'초6', m1:'중1', m2:'중2', m3:'중3', h1:'고1', h2:'고2', h3:'고3' };
-  const TRACK_LABEL = { general: '일반', bible: '성경' };
+  const TRACK_LABEL = { s1: '1학기', s2: '2학기', general: '전체', bible: '성경' };
   const POS = { v: 'v.', a: 'adj.', n: 'n.', ad: 'adv.' };
   const POS_KO = { v: '동사', a: '형용사', n: '명사', ad: '부사' };
   const LABELS = ['①', '②', '③', '④', '⑤'];
@@ -73,8 +73,10 @@
   function save(name, value) { try { localStorage.setItem(`${KEY}-${name}`, JSON.stringify(value)); } catch {} }
 
   // ── 상태 ──
-  let track = load(`track-${CFG.grade}`, 'general');
-  if (!DATA[track] || !DATA[track].length) track = DATA.general && DATA.general.length ? 'general' : 'bible';
+  const month = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', month: 'numeric' }).format(new Date()));
+  const nowSem = month >= 3 && month <= 8 ? 's1' : 's2';
+  let track = load(`track-${CFG.grade}`, nowSem);
+  if (!DATA[track] || !DATA[track].length) track = Object.keys(TRACK_LABEL).find(k => (DATA[k] || []).length) || 's1';
   let tab = load(`tabsel-${CFG.grade}`, 'period');   // period | practice | wrong (마지막으로 보던 탭)
   if (!['period', 'practice', 'wrong'].includes(tab)) tab = 'period';
   let view = THIS_PERIOD;
@@ -279,10 +281,14 @@
   if (CAN_SPEAK) window.speechSynthesis.getVoices();
 
   // ── 연습장 (손으로 풀어 보기) ──
-  // 문제마다 그림을 따로 기억함. 페이지를 닫으면 지워짐 (그림은 용량이 커서 저장하지 않음)
+  // 선(획) 단위로 기억해서 화면 옮기기, 골라서 옮기기, 되돌리기가 됨. 문제마다 따로 기억하고, 페이지를 닫으면 지워짐
+  //   그리기: 검은 펜 / 빨간 펜     지우개: 닿은 선을 통째로 지움
+  //   선택: 올가미로 둘러서 고른 뒤, 상자 안을 끌어 옮김
+  //   이동: 끌어서 화면 옮기기 (두 손가락으로 끌어도 됨. 애플펜슬을 쓰면 손가락 하나로도 옮겨짐)
   const PENCIL = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/></svg>';
-  const scratchStore = new Map();
+  const scratchStore = new Map();   // 문제 → { strokes, ox, oy, hist }
   let pad = null;
+  const PEN_W = 2.6, ERASE_R = 12, GRID = 24;
   function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#18212E'; }
   function buildPad() {
     const back = document.createElement('div');
@@ -293,94 +299,277 @@
     sheet.innerHTML = `
       <div class="sheet-bar">
         <span class="title">연습장</span>
-        <button class="tool" type="button" data-tool="ink" aria-pressed="true" aria-label="검은 펜"><span class="swatch"></span></button>
-        <button class="tool" type="button" data-tool="red" aria-pressed="false" aria-label="빨간 펜"><span class="swatch red"></span></button>
-        <button class="tool" type="button" data-tool="erase" aria-pressed="false">지우개</button>
-        <button class="tool" type="button" data-act="scratch-undo">되돌리기</button>
-        <button class="tool" type="button" data-act="scratch-clear">모두 지우기</button>
-        <button class="tool close" type="button" data-act="scratch-close">닫기</button>
+        <div class="tool-group">
+          <button class="tool" type="button" data-tool="ink" aria-pressed="true" aria-label="검은 펜"><span class="swatch"></span></button>
+          <button class="tool" type="button" data-tool="red" aria-pressed="false" aria-label="빨간 펜"><span class="swatch red"></span></button>
+          <button class="tool" type="button" data-tool="erase" aria-pressed="false">지우개</button>
+          <button class="tool" type="button" data-tool="lasso" aria-pressed="false">선택</button>
+          <button class="tool" type="button" data-tool="hand" aria-pressed="false">이동</button>
+        </div>
+        <div class="tool-group">
+          <button class="tool" type="button" data-act="scratch-undo">되돌리기</button>
+          <button class="tool" type="button" data-act="scratch-home">제자리</button>
+          <button class="tool" type="button" data-act="scratch-clear">모두 지우기</button>
+          <button class="tool close" type="button" data-act="scratch-close">닫기</button>
+        </div>
       </div>
       <div class="sheet-q"></div>
-      <div class="pad-wrap"><canvas class="pad"></canvas><p class="pad-hint">손가락이나 펜으로 풀어 보세요</p></div>`;
+      <div class="pad-wrap"><canvas class="pad"></canvas><p class="pad-hint">손가락이나 펜으로 풀어 보세요<br>두 손가락으로 끌면 화면이 옮겨져요</p></div>`;
     document.body.append(back, sheet);
     const canvas = sheet.querySelector('canvas');
     pad = { back, sheet, canvas, ctx: canvas.getContext('2d'), hint: sheet.querySelector('.pad-hint'), qEl: sheet.querySelector('.sheet-q'),
-      strokes: [], tool: 'ink', cur: null, penSeen: false };
-    const pos = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+      page: null, tool: 'ink', w: 0, h: 0, dpr: 0, penSeen: false, pointers: new Map(),
+      mode: null, cur: null, erased: null, lasso: null, sel: null, drag: null, pan: null };
+
+    const screenPos = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    const toWorld = ([x, y]) => [x + pad.page.ox, y + pad.page.oy];
+    const touches = () => [...pad.pointers.values()].filter(p => p.type === 'touch');
+    const mid = list => [(list[0].x + list[1].x) / 2, (list[0].y + list[1].y) / 2];
+
     canvas.addEventListener('pointerdown', e => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      if (e.pointerType === 'pen') pad.penSeen = true;
-      if (e.pointerType === 'touch' && pad.penSeen) return; // 펜을 쓰는 중이면 손바닥 터치는 무시
       e.preventDefault();
       canvas.setPointerCapture(e.pointerId);
-      pad.cur = { tool: pad.tool, pts: [pos(e)] };
-      pad.strokes.push(pad.cur);
-      drawStroke(pad.cur, 0);
-      pad.hint.hidden = true;
+      const sp = screenPos(e);
+      pad.pointers.set(e.pointerId, { x: sp[0], y: sp[1], type: e.pointerType });
+      if (e.pointerType === 'pen') pad.penSeen = true;
+      // 두 손가락 → 화면 옮기기 (첫 손가락으로 막 그리던 선은 취소)
+      if (e.pointerType === 'touch' && touches().length >= 2) {
+        cancelCurrent();
+        const m = mid(touches());
+        pad.mode = 'pan2'; pad.pan = { m0: m, ox0: pad.page.ox, oy0: pad.page.oy };
+        return;
+      }
+      // 이동 도구이거나, 애플펜슬을 쓰는 중에 손가락을 대면 → 화면 옮기기
+      if (pad.tool === 'hand' || (e.pointerType === 'touch' && pad.penSeen)) {
+        pad.mode = 'pan1'; pad.pan = { id: e.pointerId, s0: sp, ox0: pad.page.ox, oy0: pad.page.oy };
+        return;
+      }
+      const w = toWorld(sp);
+      if (pad.tool === 'ink' || pad.tool === 'red') {
+        pad.cur = { tool: pad.tool, pts: [w] };
+        pad.page.strokes.push(pad.cur);
+        pad.mode = 'draw';
+        drawStroke(pad.cur, 0);
+        pad.hint.hidden = true;
+      } else if (pad.tool === 'erase') {
+        pad.mode = 'erase'; pad.erased = [];
+        eraseAt(w);
+      } else if (pad.tool === 'lasso') {
+        if (pad.sel && inBox(w, pad.sel.box)) { pad.mode = 'move'; pad.drag = { last: w, dx: 0, dy: 0 }; }
+        else { pad.sel = null; pad.mode = 'lasso'; pad.lasso = [w]; redrawPad(); }
+      }
     });
+
     canvas.addEventListener('pointermove', e => {
-      if (!pad.cur) return;
-      const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-      const from = pad.cur.pts.length - 1;
-      for (const ev of events) pad.cur.pts.push(pos(ev));
-      drawStroke(pad.cur, from);
+      const p = pad.pointers.get(e.pointerId);
+      if (!p) return;
+      const sp = screenPos(e);
+      p.x = sp[0]; p.y = sp[1];
+      const mode = pad.mode;
+      if (mode === 'pan2') {
+        const t = touches();
+        if (t.length < 2) return;
+        const m = mid(t);
+        pad.page.ox = pad.pan.ox0 - (m[0] - pad.pan.m0[0]);
+        pad.page.oy = pad.pan.oy0 - (m[1] - pad.pan.m0[1]);
+        redrawPad();
+      } else if (mode === 'pan1' && e.pointerId === pad.pan.id) {
+        pad.page.ox = pad.pan.ox0 - (sp[0] - pad.pan.s0[0]);
+        pad.page.oy = pad.pan.oy0 - (sp[1] - pad.pan.s0[1]);
+        redrawPad();
+      } else if (mode === 'draw' || mode === 'erase' || mode === 'lasso') {
+        // 빠르게 움직일 때 빠진 점까지 모두 받아서 펜 끝을 정확히 따라감
+        const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+        const pts = (events.length ? events : [e]).map(ev => toWorld(screenPos(ev)));
+        if (mode === 'draw') {
+          const from = pad.cur.pts.length - 1;
+          pad.cur.pts.push(...pts);
+          drawStroke(pad.cur, from);
+        } else if (mode === 'erase') {
+          for (const w of pts) eraseAt(w);
+        } else {
+          pad.lasso.push(...pts);
+          redrawPad();
+        }
+      } else if (mode === 'move') {
+        const w = toWorld(sp);
+        const dx = w[0] - pad.drag.last[0], dy = w[1] - pad.drag.last[1];
+        pad.drag.last = w; pad.drag.dx += dx; pad.drag.dy += dy;
+        shiftStrokes(pad.sel.strokes, dx, dy);
+        pad.sel.box = [pad.sel.box[0] + dx, pad.sel.box[1] + dy, pad.sel.box[2] + dx, pad.sel.box[3] + dy];
+        redrawPad();
+      }
     });
-    const end = () => { pad.cur = null; };
+
+    const end = e => {
+      pad.pointers.delete(e.pointerId);
+      const mode = pad.mode, page = pad.page;
+      if (mode === 'pan2') { if (touches().length < 2) pad.mode = null; return; }
+      if (mode === 'pan1' && e.pointerId !== pad.pan.id) return;
+      if (mode === 'draw' && pad.cur) page.hist.push({ t: 'add', s: pad.cur });
+      if (mode === 'erase' && pad.erased.length) page.hist.push({ t: 'erase', items: pad.erased });
+      if (mode === 'lasso') { selectInLasso(); pad.lasso = null; redrawPad(); }
+      if (mode === 'move' && (pad.drag.dx || pad.drag.dy)) page.hist.push({ t: 'move', ss: pad.sel.strokes, dx: pad.drag.dx, dy: pad.drag.dy });
+      pad.mode = null; pad.cur = null; pad.erased = null; pad.drag = null; pad.pan = null;
+    };
     canvas.addEventListener('pointerup', end);
     canvas.addEventListener('pointercancel', end);
     // 휴대폰 기본 동작(길게 눌러 선택·메뉴, 화면 끌기)을 막음
-    const stop = e => { if (e.cancelable) e.preventDefault(); };
+    const stop = ev => { if (ev.cancelable) ev.preventDefault(); };
     canvas.addEventListener('touchstart', stop, { passive: false });
     canvas.addEventListener('touchmove', stop, { passive: false });
     sheet.addEventListener('contextmenu', stop);
     sheet.addEventListener('selectstart', stop);
+    // 그림판 크기가 바뀌면(수식이 그려져 문제 영역이 커질 때, 화면 회전, 주소창 변화) 바로 다시 맞춤 → 펜 끝과 선이 어긋나지 않게
+    if (window.ResizeObserver) new ResizeObserver(() => { if (!pad.sheet.hidden) sizePad(); }).observe(canvas);
     window.addEventListener('resize', () => { if (!pad.sheet.hidden) sizePad(); });
   }
+
+  function cancelCurrent() {
+    if (pad.mode === 'draw' && pad.cur) {
+      const i = pad.page.strokes.indexOf(pad.cur);
+      if (i >= 0) pad.page.strokes.splice(i, 1);
+    }
+    if (pad.mode === 'erase' && pad.erased && pad.erased.length) pad.page.hist.push({ t: 'erase', items: pad.erased });
+    pad.cur = null; pad.erased = null; pad.lasso = null; pad.mode = null;
+    redrawPad();
+  }
+  function shiftStrokes(list, dx, dy) { for (const s of list) for (const pt of s.pts) { pt[0] += dx; pt[1] += dy; } }
+  function segDist(p, a, b) {
+    const vx = b[0] - a[0], vy = b[1] - a[1], L = vx * vx + vy * vy;
+    const t = L ? Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / L)) : 0;
+    return Math.hypot(p[0] - a[0] - t * vx, p[1] - a[1] - t * vy);
+  }
+  function eraseAt(w) {
+    const strokes = pad.page.strokes;
+    let hit = false;
+    for (let i = strokes.length - 1; i >= 0; i--) {
+      const pts = strokes[i].pts;
+      const touched = pts.length === 1 ? Math.hypot(pts[0][0] - w[0], pts[0][1] - w[1]) < ERASE_R
+        : pts.some((pt, k) => k > 0 && segDist(w, pts[k - 1], pt) < ERASE_R);
+      if (touched) { pad.erased.push({ s: strokes[i], i }); strokes.splice(i, 1); hit = true; }
+    }
+    if (hit) redrawPad();
+  }
+  function inPoly(pt, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+  function boxOf(list) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const s of list) for (const [x, y] of s.pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    return [x0 - 10, y0 - 10, x1 + 10, y1 + 10];
+  }
+  function inBox(w, b) { return w[0] >= b[0] && w[0] <= b[2] && w[1] >= b[1] && w[1] <= b[3]; }
+  function selectInLasso() {
+    const poly = pad.lasso;
+    pad.sel = null;
+    if (!poly || poly.length < 3) return;
+    // 선의 점 중 절반 이상이 올가미 안에 있으면 고른 것으로 봄
+    const picked = pad.page.strokes.filter(s => s.pts.filter(pt => inPoly(pt, poly)).length >= Math.ceil(s.pts.length / 2));
+    if (picked.length) pad.sel = { strokes: picked, box: boxOf(picked) };
+  }
+
   function drawStroke(s, from) {
     const { ctx } = pad;
     ctx.save();
-    ctx.globalCompositeOperation = s.tool === 'erase' ? 'destination-out' : 'source-over';
+    ctx.translate(-pad.page.ox, -pad.page.oy);
     ctx.strokeStyle = ctx.fillStyle = s.tool === 'red' ? cssVar('--pen') : cssVar('--ink');
-    ctx.lineWidth = s.tool === 'erase' ? 24 : 2.6;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.lineWidth = PEN_W; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     const p = s.pts;
-    if (p.length === 1) { ctx.beginPath(); ctx.arc(p[0][0], p[0][1], ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill(); }
+    if (p.length === 1) { ctx.beginPath(); ctx.arc(p[0][0], p[0][1], PEN_W / 2, 0, Math.PI * 2); ctx.fill(); }
     else {
+      const a = Math.max(0, from);
       ctx.beginPath();
-      ctx.moveTo(p[Math.max(0, from)][0], p[Math.max(0, from)][1]);
-      for (let i = Math.max(1, from + 1); i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
+      ctx.moveTo(p[a][0], p[a][1]);
+      for (let i = a + 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
       ctx.stroke();
     }
     ctx.restore();
   }
   function redrawPad() {
-    const { ctx, canvas } = pad;
+    const { ctx, canvas, page } = pad;
+    if (!page) return;
     ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore();
-    for (const s of pad.strokes) drawStroke(s, 0);
-    pad.hint.hidden = pad.strokes.length > 0;
+    // 모눈: 화면을 옮기면 같이 움직여서 옮겨진 것이 보이게
+    ctx.save();
+    ctx.strokeStyle = cssVar('--grid'); ctx.lineWidth = 1;
+    ctx.beginPath();
+    const offX = -(((page.ox % GRID) + GRID) % GRID), offY = -(((page.oy % GRID) + GRID) % GRID);
+    for (let x = offX; x <= pad.w; x += GRID) { ctx.moveTo(Math.round(x) + 0.5, 0); ctx.lineTo(Math.round(x) + 0.5, pad.h); }
+    for (let y = offY; y <= pad.h; y += GRID) { ctx.moveTo(0, Math.round(y) + 0.5); ctx.lineTo(pad.w, Math.round(y) + 0.5); }
+    ctx.stroke();
+    ctx.restore();
+    for (const s of page.strokes) drawStroke(s, 0);
+    ctx.save();
+    ctx.translate(-page.ox, -page.oy);
+    ctx.setLineDash([6, 5]); ctx.lineWidth = 1.5; ctx.strokeStyle = cssVar('--sel');
+    if (pad.lasso && pad.lasso.length > 1) {
+      ctx.beginPath(); ctx.moveTo(pad.lasso[0][0], pad.lasso[0][1]);
+      for (const [x, y] of pad.lasso) ctx.lineTo(x, y);
+      ctx.stroke();
+    }
+    if (pad.sel) {
+      const [x0, y0, x1, y1] = pad.sel.box;
+      ctx.fillStyle = cssVar('--sel-soft'); ctx.globalAlpha = 0.35; ctx.fillRect(x0, y0, x1 - x0, y1 - y0); ctx.globalAlpha = 1;
+      ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    }
+    ctx.restore();
+    pad.hint.hidden = page.strokes.length > 0 || !!pad.lasso;
   }
   function sizePad() {
     const r = pad.canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    if (!r.width || !r.height) return;
+    if (r.width === pad.w && r.height === pad.h && dpr === pad.dpr) return;
+    pad.w = r.width; pad.h = r.height; pad.dpr = dpr;
     pad.canvas.width = Math.round(r.width * dpr); pad.canvas.height = Math.round(r.height * dpr);
     pad.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    redrawPad();
+  }
+  function undoPad() {
+    const page = pad.page, a = page.hist.pop();
+    if (!a) return;
+    if (a.t === 'add') { const i = page.strokes.indexOf(a.s); if (i >= 0) page.strokes.splice(i, 1); }
+    else if (a.t === 'erase') { for (const it of a.items.slice().sort((x, y) => x.i - y.i)) page.strokes.splice(Math.min(it.i, page.strokes.length), 0, it.s); }
+    else if (a.t === 'move') shiftStrokes(a.ss, -a.dx, -a.dy);
+    else if (a.t === 'clear') page.strokes.splice(0, page.strokes.length, ...a.prev);
+    pad.sel = null;
+    redrawPad();
+  }
+  function clearPad() {
+    const page = pad.page;
+    if (!page.strokes.length) return;
+    page.hist.push({ t: 'clear', prev: page.strokes.slice() });
+    page.strokes.length = 0; pad.sel = null;
+    redrawPad();
+  }
+  function setTool(t) {
+    pad.tool = t; pad.sel = null; pad.lasso = null;
+    pad.sheet.querySelectorAll('[data-tool]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
     redrawPad();
   }
   function openScratch() {
     const q = deck.at(idx);
     if (!q) return;
     if (!pad) buildPad();
-    if (!scratchStore.has(q.src)) scratchStore.set(q.src, []);
-    pad.strokes = scratchStore.get(q.src);
+    if (!scratchStore.has(q.src)) scratchStore.set(q.src, { strokes: [], ox: 0, oy: 0, hist: [] });
+    pad.page = scratchStore.get(q.src);
+    pad.sel = null; pad.lasso = null; pad.mode = null; pad.pointers.clear();
     pad.qEl.innerHTML = `<strong>${idx + 1}.</strong> ${q.q}${q.type === 'mc' ? `<ol>${q.choices.map((c, i) => `<li>${LABELS.at(i)} ${c}</li>`).join('')}</ol>` : ''}`;
     pad.back.hidden = false; pad.sheet.hidden = false;
     document.body.classList.add('sheet-open');
-    sizePad();
+    pad.w = 0; sizePad();
     typeset(pad.qEl);
     pad.sheet.querySelector('.close').focus({ preventScroll: true });
   }
   function closeScratch() {
     if (!pad || pad.sheet.hidden) return;
-    pad.back.hidden = true; pad.sheet.hidden = true; pad.cur = null;
+    pad.back.hidden = true; pad.sheet.hidden = true; pad.mode = null; pad.cur = null; pad.pointers.clear();
     document.body.classList.remove('sheet-open');
     const b = $('.scratch-btn'); if (b) b.focus({ preventScroll: true });
   }
@@ -415,9 +604,9 @@
     const tracks = Object.keys(TRACK_LABEL).filter(t => (DATA[t] || []).length);
     $('#picker').innerHTML = `
       <div class="pick-row"><span class="lbl">학년</span><strong>${GRADE_LABEL[CFG.grade]}</strong><a href="index.html">다른 학년 고르기</a></div>
-      <div class="pick-row"><span class="lbl">과정</span>
+      ${tracks.length > 1 ? `<div class="pick-row"><span class="lbl">학기</span>
         <div class="seg track">${tracks.map(t => `<button type="button" data-track="${t}" aria-pressed="${t === track}">${TRACK_LABEL[t]} <span class="n">${DATA[t].length}</span></button>`).join('')}</div>
-      </div>`;
+      </div>` : ''}`;
   }
   function renderTabs() {
     if (HW) { $('#tabs').innerHTML = ''; return; }
@@ -458,8 +647,7 @@
       const r = results.at(i);
       const cls = `dot ${r ? (r.correct ? 'ok' : 'no') : ''}${i === idx ? ' now' : ''}`;
       // 숙제는 번호를 눌러 문제를 옮겨 다닐 수 있음
-      return HW ? `<button class="${cls}" type="button" data-goto="${i}" aria-label="${i + 1}번 문제${r ? (r.correct ? ' (맞음)' : ' (틀림)') : ''}">${i + 1}</button>`
-        : `<span class="${cls}">${i + 1}</span>`;
+      return `<button class="${cls}" type="button" data-goto="${i}" aria-label="${i + 1}번 문제${r ? (r.correct ? ' (맞음)' : ' (틀림)') : ''}">${i + 1}</button>`;
     }).join('');
   }
   function renderStage() {
@@ -582,6 +770,14 @@
 
   function summaryHTML() {
     if (HW) return hwSummaryHTML();
+    const todo = deck.map((_, i) => i).filter(i => !results.at(i));
+    if (todo.length) {
+      return `<article class="card">
+        <p class="verdict">아직 안 푼 문제가 ${todo.length}개 있어요.</p>
+        <p class="empty">${todo.map(i => i + 1).join(', ')}번</p>
+        <div class="row"><button class="btn" type="button" data-goto="${todo[0]}">${todo[0] + 1}번부터 풀기</button></div>
+      </article>`;
+    }
     const total = deck.length;
     const right = results.filter(r => r && r.correct).length;
     const wrongQs = deck.filter((_, i) => !(results.at(i) && results.at(i).correct));
@@ -677,17 +873,21 @@
   document.addEventListener('input', e => { if (HW && e.target.id === 'hw-name') save('name', e.target.value.trim()); });
 
   document.addEventListener('click', e => {
-    const tool = e.target.closest('[data-tool]');
-    if (tool && pad) {
-      pad.tool = tool.dataset.tool;
-      pad.sheet.querySelectorAll('[data-tool]').forEach(b => b.setAttribute('aria-pressed', String(b === tool)));
+    const goBtn = !HW && e.target.closest('[data-goto]');
+    if (goBtn) {
+      stopSpeech(); closeScratch();
+      idx = Number(goBtn.dataset.goto); stash(); renderStage();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
+    const tool = e.target.closest('[data-tool]');
+    if (tool && pad) { setTool(tool.dataset.tool); return; }
     const sa = e.target.closest('[data-act]') && e.target.closest('[data-act]').dataset.act;
     if (sa === 'scratch') { openScratch(); return; }
     if (sa === 'scratch-close') { closeScratch(); return; }
-    if (sa === 'scratch-undo') { if (pad) { pad.strokes.pop(); redrawPad(); } return; }
-    if (sa === 'scratch-clear') { if (pad) { pad.strokes.length = 0; redrawPad(); } return; }
+    if (sa === 'scratch-undo') { if (pad) undoPad(); return; }
+    if (sa === 'scratch-clear') { if (pad) clearPad(); return; }
+    if (sa === 'scratch-home') { if (pad) { pad.page.ox = 0; pad.page.oy = 0; redrawPad(); } return; }
     const say = e.target.closest('[data-say]');
     if (say) { speak(say.dataset.say, say); return; }
     if (HW && hwClick(e, sa)) return;
@@ -745,11 +945,11 @@
     <section class="picker" id="picker" aria-label="${HW ? '숙제 정보' : '학년과 과정'}"></section>
     <nav class="chips" id="tabs" aria-label="퀴즈 종류"></nav>
     <section class="day" id="day" aria-live="polite"></section>
-    <div class="dots" id="dots" ${HW ? 'role="navigation" aria-label="문제 번호"' : 'aria-hidden="true"'}></div>
+    <div class="dots" id="dots" role="navigation" aria-label="문제 번호"></div>
     <main id="stage"></main>
     <footer>${CFG.footer || ''}</footer>`;
   window.IRAE_READY = () => typeset($('#stage'));
   // 점검용: 문제 하나를 만들어 보거나 과정을 바꿔 봄
-  window.IRAE_DEBUG = { build: (t, i) => { const keep = track; track = t; const q = build(pool()[i], i, Math.random); track = keep; return q; }, periodDeck: (t, p) => { const keep = track; track = t; const d = periodDeck(p); track = keep; return d; } };
+  window.IRAE_DEBUG = { pad: () => pad, build: (t, i) => { const keep = track; track = t; const q = build(pool()[i], i, Math.random); track = keep; return q; }, periodDeck: (t, p) => { const keep = track; track = t; const d = periodDeck(p); track = keep; return d; } };
   start();
 })();

@@ -7,11 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=Nanum+Pen+Script&display=swap">
-<link rel="stylesheet" href="assets/quiz.css?v=202609290719">
+<link rel="stylesheet" href="assets/quiz.css?v=202609300711">
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#C8392B">
-<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/app-192.png">
+<link rel="apple-touch-icon" href="icons/app-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="이레 수학 숙제">
@@ -31,7 +31,7 @@ window.MathJax = { tex: { inlineMath: [['$', '$']] }, svg: { fontCache: 'global'
   hw.src = 'current.js?t=' + Date.now();
   hw.onload = hw.onerror = function () {
     var app = document.createElement('script');
-    app.src = 'assets/quiz.js?v=202609290719';
+    app.src = 'assets/quiz.js?v=202609300711';
     document.body.appendChild(app);
   };
   document.body.appendChild(hw);
